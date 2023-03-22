@@ -1,0 +1,42 @@
+{
+  "username": "lucas",
+  "email": "lucas57.lee@gmail.com",
+  "isforked": false,
+  "repos": [
+    {
+      "repository": "angular-todo-app",
+      "description": "This is a simple angular todo app.",
+      "origin_url": "https://github.com/lucky-gru/angular-todo-app.git"
+    },
+    {
+      "repository": "hackernews",
+      "description": "node-graphql",
+      "origin_url": "https://github.com/lucky-gru/hackernews.git"
+    },
+    {
+      "repository": "salesforce-geolocation",
+      "description": "salesforce ample geolocation app.",
+      "origin_url": "https://github.com/lucky-gru/Salesforce-Geolocation.git"
+    },
+    {
+      "repository": "pioneer",
+      "description": "Governance app for Joystream DAO",
+      "origin_url": "https://github.com/lucky-gru/pioneer.git"
+    },
+    {
+      "repository": "patent_view",
+      "description": "",
+      "origin_url": "https://github.com/lucky-gru/patent_view.git"
+    },
+    {
+      "repository": "airdis-calculator",
+      "description": "Airport Distance Calculator.",
+      "origin_url": "https://github.com/lucky-gru/airdis_calculator.git"
+    },
+    {
+      "repository": "top-headlines",
+      "description": "",
+      "origin_url": "https://github.com/lucky-gru/top_headlines.git"
+    }
+  ]
+}

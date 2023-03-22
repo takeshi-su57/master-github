@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+import os
+import re
+import sys
+import json
+import shutil
+import subprocess
+from subprocess import Popen
+from datetime import datetime
+from datetime import timedelta
+from random import randint
+
+REPOS_INFO_FILE = 'repos.info'
+
+repos_info = {}
+repos_path = ''
+
+
+def run_with_ret(commands):
+    p = Popen(commands, stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE, universal_newlines=True)
+
+    (output, err) = p.communicate()
+
+    p_status = p.wait()
+    return (output, err)
+
+
+def run(commands):
+    Popen(commands).wait()
+
+
+def save_repos_info():
+    global repos_info
+    json_string = json.dumps(
+        repos_info,
+        skipkeys=True,
+        allow_nan=True,
+        indent=2
+    )
+
+    r_i_f = open(REPOS_INFO_FILE, 'w')
+    r_i_f.write(json_string)
+    r_i_f.close()
+
+
+def load_repos_info():
+    global repos_info
+
+    r_i_f = open(REPOS_INFO_FILE, 'r')
+    json_string = r_i_f.read()
+    r_i_f.close()
+
+    repos_info = json.loads(json_string)
+
+
+def process_put_info():
+    global repos_info
+
+    username = input("Please Enter username:\n")
+    email = input("Please Enter email:\n")
+    isforked = input("Please confirm is forked or not: (f/n)\n")
+    if (isforked == 'f'):
+        isforked = True
+    else:
+        isforked = False
+
+    repos_info["username"] = username
+    repos_info["email"] = email
+    repos_info["isforked"] = isforked
+    repos_info["repos"] = []
+
+    while True:
+        isend = input("Do you want to finish? (y/n)\n")
+        if (isend == 'y'):
+            break
+
+        repo_name = input("Please Enter repository name:\n")
+        description = input("Please Enter description: \n")
+        origin_url = input("Please Enter Origin url:\n")
+
+        repo = {}
+        if isforked == True:
+            repo = {
+                "repository": repo_name,
+                "description": description,
+                "origin_url": origin_url,
+                "rewrite_author": False
+            }
+        elif isforked == False:
+            repo = {
+                "repository": repo_name,
+                "description": description,
+                "origin_url": origin_url,
+            }
+        repos_info["repos"].append(repo)
+
+
+def process_clone():
+    global repos_info
+
+    repos = repos_info['repos']
+    username = repos_info['username']
+    useremail = repos_info['email']
+    isforked = repos_info['isforked']
+    new_repos = []
+
+    for repo in repos:
+        repo_origin = repo['origin_url']
+        repository = repo['repository']
+        if isforked == True:
+            repo_origin = origin = "https://github.com/{}/{}.git".format(
+                username, repository)
+
+        run(['git', 'clone', repo_origin])
+        isdel = False
+        repopath = os.path.join(repos_path, repository)
+        os.chdir(repopath)
+        (output, err) = run_with_ret(['git', 'log'])
+        isdel = isdel or (err != "")
+
+        if isforked == True:
+            output, err = run_with_ret(
+                ['git-rewrite-author', 'list', '--repo', repository])
+            isdel = isdel or (err != "")
+            filter = "\\x1b\[.*?,.*?CEST\\x1b\[0m \\x1b\[32mINF\\x1b\[0m "
+
+            output = re.sub(filter, "", output)
+            output = output.splitlines()
+            isdel = isdel or (len(output) < 3)
+
+        os.chdir(repos_path)
+
+        if (not isdel):
+            new_repos.append(repo)
+        else:
+            shutil.rmtree(repopath, onerror=onerror)
+            if isforked == True:
+                run(['gh', 'repo', 'delete', repository, '--confirm'])
+    repos_info['repos'] = new_repos
+    save_repos_info()
+
+
+def process_change_author():
+    global repos_info
+
+    username = repos_info['username']
+    email = repos_info['email']
+    repos = repos_info['repos']
+
+    for repo in repos:
+        repository, description = repo["repository"], repo["description"]
+
+        repopath = os.path.join(repos_path, repository)
+        origin = "https://github.com/{}/{}.git".format(username, repository)
+        filterStr = '''
+      GIT_AUTHOR_NAME='{0}';
+      GIT_AUTHOR_EMAIL='{1}';
+      GIT_COMMITTER_NAME='{0}';
+      GIT_COMMITTER_EMAIL='{1}';
+      HEAD;
+    '''.format(username, email)
+
+        run(['gh', 'repo', 'create', repository,
+            '--public', '--description', description])
+        os.chdir(repopath)
+        run(['git', 'filter-branch', '-f', '--env-filter', filterStr])
+        run(['git', 'remote', 'remove', 'origin'])
+        run(['git', 'remote', 'add', 'origin', origin])
+        run(['git', 'push', 'origin', '--force', '--all'])
+        os.chdir(repos_path)
+
+
+def process_delete_github():
+    global repos_info
+
+    repos = repos_info['repos']
+    for repo in list(repos):
+        run(['gh', 'repo', 'delete', repo['repository'], '--confirm'])
+
+
+def onerror(func, path, exc_info):
+    """
+    Error handler for ``shutil.rmtree``.
+
+    If the error is due to an access error (read only file)
+    it attempts to add write permission and then retries.
+
+    If the error is for another reason it re-raises the error.
+
+    Usage : ``shutil.rmtree(path, onerror=onerror)``
+    """
+    import stat
+    # Is the error an access error?
+    if not os.access(path, os.W_OK):
+        os.chmod(path, stat.S_IWUSR)
+        func(path)
+    else:
+        raise
+
+
+def process_delete_local():
+    global repos_info
+
+    repos = repos_info['repos']
+    for repo in list(repos):
+        repopath = os.path.join(repos_path, repo["repository"])
+        shutil.rmtree(repopath, onerror=onerror)
+
+
+def process_rewrite_author():
+    global repos_info
+
+    name2email = {}
+    email2name = {}
+    emails = []
+
+    username, useremail = repos_info['username'], repos_info['email']
+    repos = repos_info["repos"]
+
+    for repo in repos:
+        repository = repo["repository"]
+        rewrite_author = repo["rewrite_author"]
+
+        if (rewrite_author == False):
+            output, err = run_with_ret(
+                ['git-rewrite-author', 'list', '--repo', repository])
+            filter = "\\x1b\[.*?,.*?CEST\\x1b\[0m \\x1b\[32mINF\\x1b\[0m "
+
+            output = re.sub(filter, "", output)
+            output = output.splitlines()
+
+            name2email = {}
+            email2name = {}
+            emails = []
+            for line in output:
+
+                email = re.findall('<.*?@.*?>', line)[0][1:-1]
+                name = re.sub(' <.*?@.*?>', "", line).strip()
+
+                if name not in name2email:
+                    name2email[name] = []
+
+                name2email[name].append(email)
+
+                if email not in email2name:
+                    email2name[email] = []
+
+                email2name[email].append(name)
+
+                emails.append(email)
+
+            emails = list(set(emails))
+            emails_len = len(emails)
+
+            flg = []
+            for i in range(emails_len):
+                flg.append(0)
+
+            groups = []
+            for i in range(emails_len):
+                if flg[i]:
+                    continue
+                group = []
+                flg[i] = 1
+                q = [i]
+                while len(q):
+                    cur = q.pop()
+                    group.append(emails[cur])
+                    for name in email2name[emails[i]]:
+                        for email in name2email[name]:
+                            index = emails.index(email)
+                            if flg[index]:
+                                continue
+                            flg[index] = 1
+                            q.append(index)
+                groups.append(group)
+
+            group_len = len(groups)
+            for i in range(group_len):
+                print("--------------(group_{})---------------".format(i))
+                for email in groups[i]:
+                    print(email)
+
+            select = int(input("Please choose one:\n"))
+            dataJson = json.dumps(
+                [
+                    {
+                        "old": groups[select],
+                        "correct_name": username,
+                        "correct_mail": useremail
+                    }
+                ],
+                skipkeys=True,
+                allow_nan=True,
+                indent=2
+            )
+            print(dataJson)
+            json_file_name = os.path.join(repos_path, 'authors.json')
+            json_file = open(json_file_name, 'w')
+            json_file.write(dataJson)
+            json_file.close()
+
+            os.chdir(repos_path)
+            run(['git-rewrite-author', 'rewrite-list',
+                json_file_name, '--repo', repository])
+
+        repopath = os.path.join(repos_path, repository)
+
+        os.chdir(repopath)
+        run(['git', 'push', 'origin', '--force', '--all'])
+        os.chdir(repos_path)
+        repo["rewrite_author"] = True
+
+
+def contributions_per_day(max_commits):
+    max_c = max_commits
+
+    if max_c > 10:
+        max_c = 20
+    if max_c < 1:
+        max_c = 1
+    
+    if (randint(1, 10) < 9):
+        return randint(1, 4)
+    else:
+        return randint(5, max_c)
+
+
+def message(date):
+    return date.strftime('Contribution: %Y-%m-%d %H:%M')
+
+
+def contribute(date):
+    with open(os.path.join(os.getcwd(), 'README.md'), 'a') as file:
+        file.write(message(date) + '\n\n')
+    run(['git', 'add', '.'])
+    run(['git', 'commit', '-m', '"%s"' % message(date),
+         '--date', date.strftime('"%Y-%m-%d %H:%M:%S"')])
+
+
+def process_auto_fill_contribute():
+    user_name = input("Please Enter username:\n")
+    if (user_name == ""):
+        return
+
+    user_email = input("Please Enter email:\n")
+    if (user_email == ""):
+        return
+
+    prev_year = int(input("Please Enter Prev Year:\n"))
+    if (prev_year is None):
+        prev_year = 0
+
+    prev_month = int(input("Please Enter Prev Month:\n"))
+    if (prev_month is None):
+        prev_month = 0
+
+    frequency = int(input("Please Enter frequency(0, 100):\n"))
+    if (frequency is None):
+        frequency = 0
+
+    curr_date = datetime.now()
+    directory = 'repository-' + curr_date.strftime('%Y-%m-%d-%H-%M-%S')
+
+    os.mkdir(directory)
+    os.chdir(directory)
+    run(['git', 'init'])
+
+    if user_name is not None:
+        run(['git', 'config', 'user.name', user_name])
+
+    if user_email is not None:
+        run(['git', 'config', 'user.email', user_email])
+
+    NUM = prev_year * 366 + prev_month * 31
+    start_date = curr_date.replace(
+        hour=20, minute=0) - timedelta(NUM)
+    relax_frequence = 5
+    relax_months = ["January", "July"]
+    for day in (start_date + timedelta(n) for n in range(NUM)):
+        curr_month_name = day.strftime("%B")
+
+        if (curr_month_name in relax_months):
+            use_frequence = relax_frequence
+        else:
+            use_frequence = frequency
+
+        if (day.weekday() < 5) \
+                and randint(0, 100) < use_frequence:
+            for commit_time in (day + timedelta(minutes=m)
+                                for m in range(contributions_per_day(10))):
+                contribute(commit_time)
+
+    repository = "repos_" + str(randint(500000, 800000))
+    origin = "https://github.com/{}/{}.git".format(user_name, repository)
+    print(origin)
+    if repository is not None:
+        run(['gh', 'repo', 'create', repository, '--private'])
+        run(['git', 'remote', 'add', 'origin', origin])
+        run(['git', 'branch', '-M', 'main'])
+        run(['git', 'push', '-u', 'origin', 'main'])
+
+    print('\nRepository generation ' +
+          '\x1b[6;30;42mcompleted successfully\x1b[0m!')
+
+
+def main():
+    global repos_path, REPOS_INFO_FILE
+
+    repos_path = os.getcwd()
+    REPOS_INFO_FILE = os.path.join(repos_path, REPOS_INFO_FILE)
+
+    command_kind = sys.argv[1]
+
+    except_commands = ["put_info", "fill"]
+    if (command_kind not in except_commands):
+        load_repos_info()
+
+    if (command_kind == 'put_info'):
+        process_put_info()
+        save_repos_info()
+
+    elif (command_kind == 'clone'):
+        run(['gh', 'auth', 'refresh', '-s', 'delete_repo'])
+        process_clone()
+
+    elif (command_kind == 'create'):
+        run(['gh', 'auth', 'login'])
+        process_change_author()
+
+    elif (command_kind == 'delete'):
+        run(['gh', 'auth', 'refresh', '-s', 'delete_repo'])
+        process_delete_github()
+        process_delete_local()
+
+    elif (command_kind == 'delete_github'):
+        run(['gh', 'auth', 'refresh', '-s', 'delete_repo'])
+        process_delete_github()
+
+    elif (command_kind == 'delete_local'):
+        process_delete_local()
+
+    elif (command_kind == 'fork'):
+        process_rewrite_author()
+        save_repos_info()
+
+    elif (command_kind == 'fill'):
+        run(['gh', 'auth', 'login'])
+        process_auto_fill_contribute()
+
+
+# start program
+if __name__ == "__main__":
+    main()
